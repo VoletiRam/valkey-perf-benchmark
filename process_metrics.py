@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 import logging
 
@@ -42,7 +42,7 @@ class MetricsProcessor:
 
     def create_metrics(
         self,
-        benchmark_csv_data: str,
+        benchmark_data: Dict[str, Any],
         command: str,
         data_size: int,
         pipeline: int,
@@ -55,8 +55,8 @@ class MetricsProcessor:
 
         Parameters
         ----------
-        benchmark_csv_data : str
-            Raw CSV output from ``valkey-benchmark``.
+        benchmark_data : Dict[str, Any]
+            CSV output from ``valkey-benchmark``.
         command : str
             Benchmark command that was executed.
         data_size : int
@@ -70,35 +70,11 @@ class MetricsProcessor:
         warmup : int, optional
             Warmup time in seconds.
         """
-        if not benchmark_csv_data or not benchmark_csv_data.strip():
+        if not benchmark_data:
             logging.warning("Empty benchmark output received")
             return None
 
         try:
-            import csv
-            import io
-
-            # Find last 2 lines that start with quotes (CSV format)
-            lines = benchmark_csv_data.strip().split("\n")
-            csv_lines = [line for line in lines if line.strip().startswith('"')]
-
-            if len(csv_lines) < 2:
-                logging.warning(f"Expected 2 CSV lines, found {len(csv_lines)}")
-                return None
-
-            # Take last 2 CSV lines (header + data)
-            csv_text = "\n".join(csv_lines[-2:])
-            csv_reader = csv.reader(io.StringIO(csv_text))
-            rows = list(csv_reader)
-
-            if len(rows) < 2 or len(rows[0]) != len(rows[1]):
-                logging.warning(
-                    f"CSV format mismatch: {len(rows[0])} labels vs {len(rows[1])} values"
-                )
-                return None
-
-            data = dict(zip(rows[0], rows[1]))
-
             # Helper function to safely convert to float
             def safe_float(value, default=0.0):
                 try:
@@ -116,13 +92,13 @@ class MetricsProcessor:
                 "data_size": int(data_size),
                 "pipeline": int(pipeline),
                 "clients": int(clients),
-                "rps": safe_float(data.get("rps")),
-                "avg_latency_ms": safe_float(data.get("avg_latency_ms")),
-                "min_latency_ms": safe_float(data.get("min_latency_ms")),
-                "p50_latency_ms": safe_float(data.get("p50_latency_ms")),
-                "p95_latency_ms": safe_float(data.get("p95_latency_ms")),
-                "p99_latency_ms": safe_float(data.get("p99_latency_ms")),
-                "max_latency_ms": safe_float(data.get("max_latency_ms")),
+                "rps": safe_float(benchmark_data.get("rps")),
+                "avg_latency_ms": safe_float(benchmark_data.get("avg_latency_ms")),
+                "min_latency_ms": safe_float(benchmark_data.get("min_latency_ms")),
+                "p50_latency_ms": safe_float(benchmark_data.get("p50_latency_ms")),
+                "p95_latency_ms": safe_float(benchmark_data.get("p95_latency_ms")),
+                "p99_latency_ms": safe_float(benchmark_data.get("p99_latency_ms")),
+                "max_latency_ms": safe_float(benchmark_data.get("max_latency_ms")),
                 "cluster_mode": self.cluster_mode,
                 "tls": self.tls_mode,
             }
