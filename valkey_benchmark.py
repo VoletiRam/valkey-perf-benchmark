@@ -707,24 +707,30 @@ class ClientRunner:
                                 "requests"
                             ) or expanded_scenario.get("maxdocs")
 
-                            metrics = metrics_processor.create_metrics(
-                                proc.stdout,
-                                expanded_scenario["command"],
-                                expanded_scenario.get("data_size", 100),
-                                expanded_scenario.get("pipeline", 1),
-                                expanded_scenario.get("clients", 1),
-                                requests_value,
-                                warmup_duration,
-                                expanded_scenario.get("duration"),
-                            )
-                            if metrics:
-                                metrics["status"] = "success"
-                                metrics["test_id"] = f"{group_id}_{scenario_id}"
-                                metrics["test_phase"] = scenario_type
-                                metrics["config_set"] = config_set
-                                if expanded_scenario.get("dataset"):
-                                    metrics["dataset"] = expanded_scenario["dataset"]
-                                metric_json.append(metrics)
+                            # Parse CSV output (same as core)
+                            reader = csv.DictReader(proc.stdout.splitlines())
+                            for row in reader:
+                                metrics = metrics_processor.create_metrics(
+                                    row,
+                                    expanded_scenario["command"],
+                                    expanded_scenario.get("data_size", 100),
+                                    expanded_scenario.get("pipeline", 1),
+                                    expanded_scenario.get("clients", 1),
+                                    requests_value,
+                                    warmup_duration,
+                                    expanded_scenario.get("duration"),
+                                )
+                                if metrics:
+                                    metrics["status"] = "success"
+                                    metrics["test_id"] = f"{group_id}_{scenario_id}"
+                                    metrics["test_phase"] = scenario_type
+                                    metrics["config_set"] = config_set
+                                    if expanded_scenario.get("dataset"):
+                                        metrics["dataset"] = expanded_scenario[
+                                            "dataset"
+                                        ]
+                                    metric_json.append(metrics)
+                                break  # Module commands return single row
                         else:
                             logging.info(
                                 f"Profiling enabled, skipping metrics collection for {group_id}_{scenario_id}"
