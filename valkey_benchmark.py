@@ -149,7 +149,7 @@ class ClientRunner:
     ) -> Optional[subprocess.CompletedProcess]:
         """Execute a command with proper error handling and timeout."""
         cmd_list = list(command)
-        cmd_str = " ".join(cmd_list)
+        cmd_str = shlex.join(cmd_list)
         logging.info(f"Running: {cmd_str}")
 
         try:
