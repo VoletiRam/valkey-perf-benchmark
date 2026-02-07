@@ -116,19 +116,28 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--module",
-        choices=["core", "search"],
-        default="core",
-        help="Module to test: 'core' for standard Valkey commands, 'search' for valkey-search module (FTS, vector, etc.) (default: core)",
+        # NOTE: When adding support for new modules (json, bloom, graph, etc.),
+        # add the module name to the choices list below
+        choices=["search"],
+        default=None,
+        help="Module to test (e.g., 'search' for valkey-search module). "
+        "If not specified, runs core Valkey command tests.",
     )
 
     parser.add_argument(
         "--groups",
-        help="Test groups to run (search module only, e.g., '1,2,3')",
+        default=None,
+        help="Test groups to run (e.g., '1,2,3'). "
+        "If not specified, runs all test groups. "
+        "Requires configuration with 'test_groups' structure.",
     )
 
     parser.add_argument(
         "--scenarios",
-        help="Specific scenarios to run (search module only, e.g., 'ingest,a,b')",
+        default=None,
+        help="Specific scenarios to run within groups (e.g., 'a,b,c'). "
+        "If not specified, runs all scenarios. "
+        "Requires configuration with 'test_groups' structure.",
     )
 
     parser.add_argument(
@@ -213,24 +222,11 @@ def validate_config(cfg: dict) -> None:
     if not isinstance(cfg["warmup"], int) or cfg["warmup"] < 0:
         raise ValueError("'warmup' must be a non-negative integer")
 
+    # Validate optional core-specific fields
     for k in OPTIONAL_CONF_KEYS:
         if k in cfg:
-            # Validate optional io-threads
-            if k == "io-threads":
-                if isinstance(cfg["io-threads"], int):
-                    if cfg["io-threads"] <= 0:
-                        raise ValueError("'io-threads' must be a positive integer")
-                elif isinstance(cfg["io-threads"], list):
-                    if not all(isinstance(x, int) and x > 0 for x in cfg["io-threads"]):
-                        raise ValueError(
-                            "'io-threads' must be a list of positive integers"
-                        )
-                else:
-                    raise ValueError(
-                        "'io-threads' must be a positive integer or list of positive integers"
-                    )
             # Validate optional benchmark-threads
-            elif k == "benchmark-threads":
+            if k == "benchmark-threads":
                 if (
                     not isinstance(cfg["benchmark-threads"], int)
                     or cfg["benchmark-threads"] <= 0
@@ -252,14 +248,9 @@ def validate_config(cfg: dict) -> None:
                         raise ValueError(
                             "'duration' must be a positive integer or null"
                         )
-            # Validate optional CPU ranges
-            elif k in ["server_cpu_range", "client_cpu_range"]:
-                if not isinstance(cfg[k], str):
-                    raise ValueError(f"'{k}' must be a string")
-                try:
-                    parse_core_range(cfg[k])
-                except ValueError as e:
-                    raise ValueError(f"Invalid {k}: {e}")
+
+    # Validate shared infrastructure fields
+    validate_shared_fields(cfg)
 
 
 def load_configs(path: str) -> List[dict]:
@@ -351,6 +342,95 @@ def parse_bool(value) -> bool:
     if isinstance(value, str):
         return value.lower() in ("yes", "true", "1")
     return bool(value)
+
+
+def validate_shared_fields(cfg: dict) -> None:
+    """Validate infrastructure fields shared by core and module configs."""
+
+    # Port validation
+    if "port" in cfg:
+        if not isinstance(cfg["port"], int) or cfg["port"] <= 0 or cfg["port"] > 65535:
+            raise ValueError("'port' must be between 1 and 65535")
+
+    # Boolean fields
+    if "cluster_mode" in cfg:
+        cfg["cluster_mode"] = parse_bool(cfg["cluster_mode"])
+
+    if "tls_mode" in cfg:
+        cfg["tls_mode"] = parse_bool(cfg["tls_mode"])
+
+    # io-threads validation
+    if "io-threads" in cfg:
+        io_threads = cfg["io-threads"]
+        if isinstance(io_threads, int):
+            if io_threads <= 0:
+                raise ValueError("'io-threads' must be positive")
+        elif isinstance(io_threads, list):
+            if not all(isinstance(x, int) and x > 0 for x in io_threads):
+                raise ValueError("'io-threads' list must contain positive integers")
+        else:
+            raise ValueError("'io-threads' must be int or list of ints")
+
+    # CPU ranges
+    for cpu_key in ["server_cpu_range", "client_cpu_range"]:
+        if cpu_key in cfg:
+            try:
+                parse_core_range(cfg[cpu_key])
+            except ValueError as e:
+                raise ValueError(f"Invalid {cpu_key}: {e}")
+
+
+def validate_module_config(cfg: dict) -> None:
+    """Validate and normalize module config structure."""
+
+    # Auto-wrap flat scenarios into default group
+    if "scenarios" in cfg and "test_groups" not in cfg:
+        cfg["test_groups"] = [
+            {
+                "group": 1,
+                "description": "Default test group",
+                "scenarios": cfg["scenarios"],
+            }
+        ]
+        del cfg["scenarios"]
+
+    # Validate test_groups structure (REQUIRED for modules)
+    if "test_groups" not in cfg:
+        raise ValueError("Module config requires 'test_groups' or 'scenarios' field")
+
+    test_groups = cfg["test_groups"]
+    if not isinstance(test_groups, list) or len(test_groups) == 0:
+        raise ValueError("'test_groups' must be a non-empty list")
+
+    for i, group in enumerate(test_groups):
+        if not isinstance(group, dict):
+            raise ValueError(f"test_groups[{i}] must be a dict")
+
+        if "scenarios" not in group:
+            raise ValueError(f"test_groups[{i}] missing 'scenarios' field")
+
+        if not isinstance(group["scenarios"], list) or len(group["scenarios"]) == 0:
+            raise ValueError(f"test_groups[{i}].scenarios must be a non-empty list")
+
+    # Validate module-specific optional fields
+    if "config_sets" in cfg:
+        if not isinstance(cfg["config_sets"], list):
+            raise ValueError("'config_sets' must be a list")
+        for i, cs in enumerate(cfg["config_sets"]):
+            if not isinstance(cs, dict):
+                raise ValueError(f"config_sets[{i}] must be a dict")
+
+    if "profiling_sets" in cfg:
+        if not isinstance(cfg["profiling_sets"], list):
+            raise ValueError("'profiling_sets' must be a list")
+        for i, ps in enumerate(cfg["profiling_sets"]):
+            if not isinstance(ps, dict):
+                raise ValueError(f"profiling_sets[{i}] must be a dict")
+            if "enabled" in ps and not isinstance(ps["enabled"], bool):
+                raise ValueError(f"profiling_sets[{i}].enabled must be a boolean")
+
+    # Validate shared infrastructure fields
+    validate_shared_fields(cfg)
 
 
 def run_benchmark_matrix(
@@ -487,8 +567,8 @@ def main() -> None:
         print("ERROR: --runs must be a positive integer")
         sys.exit(1)
 
-    # Check if module testing mode (for modules like valkey-search)
-    if args.module != "core":
+    # Module testing mode (for modules like valkey-search, valkey-json, etc.)
+    if args.module:
         # Module testing requires valkey-path
         if not args.valkey_path:
             print(f"ERROR: {args.module} module testing requires --valkey-path")
@@ -505,11 +585,14 @@ def main() -> None:
         # For modules, we expect test_groups in config instead of standard fields
         module_config = configs_list[0]
 
+        # Validate module configuration
+        validate_module_config(module_config)
+
         # Run module testing (unified flow)
         run_module_tests(args, module_config)
         return
 
-    # Core testing path (original behavior)
+    # Core testing path (default when --module not specified)
     commits = args.commits.copy()
     if args.baseline and args.baseline not in commits:
         commits.append(args.baseline)

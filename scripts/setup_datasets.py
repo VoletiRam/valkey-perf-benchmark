@@ -265,11 +265,8 @@ def generate_queries(output_dir: Path, config: dict, filename: str) -> Path:
                 terms = [f"phrase{query_id}_term{i}" for i in range(1, term_count + 1)]
                 writer.writerow(terms)
 
-        # Future: add other query types here
-        # elif query_type == "single_term":
-        #     writer.writerow(["term"])
-        #     for query_id in range(num_queries):
-        #         writer.writerow([f"term{query_id}"])
+        # NOTE: When adding new query types (e.g., "single_term"),
+        # implement appropriate generation logic in this conditional block
 
     logging.info(f"Complete: {filename} ({num_queries} queries)")
     return output

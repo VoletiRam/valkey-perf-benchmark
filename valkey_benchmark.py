@@ -1,7 +1,9 @@
 """Client-side benchmark execution logic."""
 
+import copy
 import logging
 import random
+import shlex
 import subprocess
 import time
 from contextlib import contextmanager
@@ -48,7 +50,7 @@ READ_POPULATE_MAP = {
 
 def deep_merge(base: dict, override: dict) -> dict:
     """Deep merge override into base, returning new dict."""
-    result = base.copy()
+    result = copy.deepcopy(base)
     for key, value in override.items():
         if key in result and isinstance(result[key], dict) and isinstance(value, dict):
             result[key] = deep_merge(result[key], value)
@@ -151,8 +153,8 @@ class ClientRunner:
 
         try:
             result = subprocess.run(
-                cmd_str,
-                shell=True,
+                cmd_list,
+                shell=False,
                 cwd=cwd,
                 capture_output=capture_output,
                 text=text,
@@ -461,7 +463,7 @@ class ClientRunner:
         # Options provided: create variant for each option
         scenarios = []
         for flag, suffix in options.items():
-            variant = scenario.copy()
+            variant = copy.deepcopy(scenario)
             variant["id"] = scenario["id"] + suffix
             variant["command"] = scenario["command"] + (f" {flag}" if flag else "")
             if "description" in variant and flag:
@@ -728,7 +730,7 @@ class ClientRunner:
         logging.info(f"Executing setup command: {cmd_str}")
         try:
             with self._client_context() as client:
-                cmd_parts = cmd_str.split()
+                cmd_parts = shlex.split(cmd_str)
                 result = client.execute_command(*cmd_parts)
                 logging.info(f"Setup command result: {result}")
         except Exception as e:
@@ -801,8 +803,9 @@ class ClientRunner:
 
         cmd += ["--csv"]
 
-        # Add the command
-        cmd += ["--", scenario["command"]]
+        # Add the command - split into individual arguments
+        cmd += ["--"]
+        cmd += shlex.split(scenario["command"])
 
         return cmd
 

@@ -5,7 +5,7 @@ import platform
 import subprocess
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 
 class PerformanceProfiler:
@@ -64,7 +64,7 @@ class PerformanceProfiler:
         arch = platform.machine()
         self.call_graph = "fp" if arch in ["aarch64", "arm64"] else "dwarf"
 
-    def _ensure_flamegraph_scripts(self) -> tuple[Path, Path]:
+    def _ensure_flamegraph_scripts(self) -> Tuple[Path, Path]:
         """Download flamegraph scripts if not present. Called during init."""
         scripts_dir = Path(__file__).parent / "scripts"
         stackcollapse = scripts_dir / "stackcollapse-perf.pl"
@@ -148,7 +148,7 @@ class PerformanceProfiler:
             server_pid = proc.stdout.strip().split()[0]
             perf_data = self.results_dir / f"{test_id}_{self.timestamp}.perf.data"
 
-            perf_cmd = ["sudo", "perf", "record"]
+            perf_cmd = ["/usr/bin/sudo", "perf", "record"]
             if self.profile_mode == "cpu":
                 perf_cmd += ["-e", "cycles"]
             elif self.profile_mode == "wall-time":
@@ -199,10 +199,12 @@ class PerformanceProfiler:
             )
             if perf_pid_search.returncode == 0:
                 actual_perf_pid = perf_pid_search.stdout.strip().split()[0]
-                subprocess.run(["sudo", "kill", "-INT", actual_perf_pid], check=False)
+                subprocess.run(
+                    ["/usr/bin/sudo", "kill", "-INT", actual_perf_pid], check=False
+                )
             else:
                 subprocess.run(
-                    ["sudo", "kill", "-INT", str(self.profiler_process.pid)],
+                    ["/usr/bin/sudo", "kill", "-INT", str(self.profiler_process.pid)],
                     check=False,
                 )
         except Exception as e:
@@ -243,7 +245,7 @@ class PerformanceProfiler:
         report_output = self.results_dir / f"{test_id}_{self.timestamp}_report.txt"
 
         perf_report = subprocess.run(
-            ["sudo", "perf", "report", "-i", str(perf_data), "--stdio"],
+            ["/usr/bin/sudo", "perf", "report", "-i", str(perf_data), "--stdio"],
             capture_output=True,
             text=True,
         )
@@ -263,7 +265,7 @@ class PerformanceProfiler:
             return
 
         perf_script = subprocess.run(
-            ["sudo", "perf", "script", "-i", str(perf_data)],
+            ["/usr/bin/sudo", "perf", "script", "-i", str(perf_data)],
             capture_output=True,
             text=True,
         )

@@ -308,14 +308,10 @@ The project includes several GitHub Actions workflows for automated testing and 
   - Uploads results to S3 and pushes metrics to PostgreSQL
   - Supports manual triggering with configurable commit limits
 
-- **`fts_benchmark.yml`**: FTS continuous benchmarking workflow
-  - Tests valkey-search module performance
-  - Builds Valkey + valkey-search from specified branches
-  - Generates/caches FTS datasets on runner
-  - Runs configurable test groups with optional profiling
-  - Uploads results to S3 (`fts-results/` prefix) and PostgreSQL
-  - Scheduled weekly or manual trigger
-  - Parameters: branch, test groups, runs, profiling enable/disable
+  - **`module-benchmark.yml`**: Module framework CI test on GitHub runners
+  - Validates module benchmarking framework with minimal test
+  - Uses configs/module-test-arm.json (4-core, 1000 docs)
+  - Builds valkey-server + valkey-search, runs quick smoke test
 
 - **`basic.yml`**: Basic validation and testing
 - **`check_format.yml`**: Code formatting validation
@@ -547,23 +543,24 @@ python benchmark.py \
   --config configs/fts-benchmarks.json \
   --groups 1
 
-# Run specific scenarios only
+# Run specific scenarios within groups
 python benchmark.py \
   --module search \
   --valkey-path /path/to/valkey \
   --config configs/fts-benchmarks.json \
   --scenarios a,b
 
-# Against remote server
+# Filter by groups (works with any config using test_groups structure)
 python benchmark.py \
   --module search \
   --valkey-path /path/to/valkey \
-  --target-ip 192.168.1.100 \
   --config configs/fts-benchmarks.json \
-  --groups 1
+  --groups 1,2
 ```
 
 Results saved to `results/search_tests/` with optional flamegraphs if profiling enabled in config.
+
+**Note:** `--groups` and `--scenarios` work with any configuration using the `test_groups` structure (core or module tests).
 
 #### CPU Pinning Configuration
 

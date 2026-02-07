@@ -165,7 +165,7 @@ class CPUMonitor:
                                 if os.path.exists(comm_path):
                                     with open(comm_path, "r") as f:
                                         self.thread_names[tid] = f.read().strip()
-                            except:
+                            except (IOError, OSError, PermissionError):
                                 self.thread_names[tid] = f"thread_{tid}"
 
                         # Track core migrations
@@ -184,7 +184,7 @@ class CPUMonitor:
                                                 self.thread_migrations.get(tid, 0) + 1
                                             )
                                         self.thread_cores[tid] = current_core
-                        except:
+                        except (IOError, OSError, ValueError, IndexError):
                             pass
 
                         # Calculate CPU % over 1 second interval
