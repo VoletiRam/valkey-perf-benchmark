@@ -160,9 +160,13 @@ class ServerLauncher:
             else:
                 cmd += ["--loadmodule", module_path]
 
-        # Unique cluster config file for multi-node clusters
-        if cluster_mode and bind_ip:
+        # Cluster configuration for multi-node clusters
+        if cluster_mode and hasattr(self, "target_ip"):
+            # Always use unique cluster config file
             cmd += ["--cluster-config-file", f"nodes-{port}.conf"]
+            # Announce public IP for cluster gossip (when bind_ip not specified)
+            if not bind_ip:
+                cmd += ["--cluster-announce-ip", self.target_ip]
 
         # Common server configuration
         cmd += [
@@ -349,7 +353,9 @@ class ServerLauncher:
 
         # Wait for node to be ready (coordinator initialization takes longer)
         logging.info(f"Waiting for node {node_id} to be ready...")
-        client = self._create_client(tls_mode, host=bind_ip, port=port)
+        # Use target_ip for health check (works whether bind_ip specified or not)
+        check_host = self.target_ip if not bind_ip else bind_ip
+        client = self._create_client(tls_mode, host=check_host, port=port)
         try:
             start = time.time()
             while time.time() - start < 30:
@@ -395,7 +401,9 @@ class ServerLauncher:
 
             # Verify cluster is ready (connect to first node and reuse verification)
             logging.info("Verifying cluster readiness...")
-            client = self._create_client(tls_mode, host=bind_ip, port=ports[0])
+            # Use target_ip for cluster verification
+            verify_host = self.target_ip if not bind_ip else bind_ip
+            client = self._create_client(tls_mode, host=verify_host, port=ports[0])
             try:
                 self._wait_for_cluster_ready(client)
                 logging.info(f"✓ {len(ports)}-node cluster ready for requests")
