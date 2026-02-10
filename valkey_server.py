@@ -426,7 +426,7 @@ class ServerLauncher:
 
                 ports = config["cluster_ports"]
                 cpu_ranges = config["cluster_cpu_ranges"]
-                bind_ip = config.get("bind_ip", "127.0.0.1")
+                bind_ip = config.get("bind_ip")
 
                 # Launch all nodes
                 for i, (port, cpu_range) in enumerate(zip(ports, cpu_ranges)):
