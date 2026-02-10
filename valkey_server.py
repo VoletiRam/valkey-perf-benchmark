@@ -473,20 +473,50 @@ class ServerLauncher:
     def shutdown(self, tls_mode: bool) -> None:
         """Gracefully shutdown the Valkey server."""
         logging.info("Shutting down Valkey server...")
-        try:
-            with self._client_context(tls_mode) as client:
-                client.shutdown(nosave=True)
-                logging.info("Shutdown command sent to server.")
-        except Exception as e:
-            logging.warning(f"Could not send shutdown command: {e}")
-            # Try to kill the process directly
-            try:
-                self._run(["pkill", "-f", VALKEY_SERVER], timeout=10)
-                logging.info("Valkey server process killed.")
-            except Exception as kill_error:
-                logging.error(f"Failed to kill Valkey server process: {kill_error}")
 
-        # Wait for process to actually stop
+        # Multi-node cluster: shutdown each node individually
+        if self.cluster_nodes:
+            logging.info(f"Shutting down {len(self.cluster_nodes)} cluster nodes...")
+            for node in self.cluster_nodes:
+                try:
+                    client = self._create_client(
+                        tls_mode, host=self.target_ip, port=node["port"]
+                    )
+                    client.shutdown(nosave=True)
+                    client.close()
+                    logging.info(f"Shutdown node on port {node['port']}")
+                except Exception as e:
+                    logging.warning(f"Could not shutdown node {node['port']}: {e}")
+
+            # Clean cluster config files
+            try:
+                import subprocess
+
+                subprocess.run(
+                    ["bash", "-c", "rm -f nodes-*.conf"],
+                    cwd=self.valkey_path,
+                    timeout=5,
+                    check=False,
+                )
+                logging.info("Cleaned cluster config files")
+            except Exception as e:
+                logging.warning(f"Could not clean cluster config files: {e}")
+        else:
+            # Single node: shutdown via default connection
+            try:
+                with self._client_context(tls_mode) as client:
+                    client.shutdown(nosave=True)
+                    logging.info("Shutdown command sent to server.")
+            except Exception as e:
+                logging.warning(f"Could not send shutdown command: {e}")
+
+        # Fallback: kill any remaining processes
+        try:
+            self._run(["pkill", "-f", VALKEY_SERVER], timeout=10)
+        except:
+            pass
+
+        # Wait for all processes to stop
         self._wait_for_process_shutdown()
 
     def _wait_for_process_shutdown(self, timeout: int = 10) -> None:
