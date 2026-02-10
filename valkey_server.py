@@ -23,10 +23,12 @@ class ServerLauncher:
         results_dir: str,
         valkey_path: str = "../valkey",
         cores: Optional[str] = None,
+        target_ip: str = "127.0.0.1",
     ) -> None:
         self.results_dir = results_dir
         self.valkey_path = valkey_path
         self.cores = cores
+        self.target_ip = target_ip
         self.module_path = None  # Will be set during launch
         self.cluster_nodes = []  # Track multiple node processes
 
@@ -366,14 +368,15 @@ class ServerLauncher:
     def _create_multi_node_cluster(
         self,
         ports: list,
-        bind_ip: str,
+        bind_ip: Optional[str],
         tls_mode: bool,
     ) -> None:
         """Create cluster using valkey-cli and verify readiness."""
         logging.info(f"Creating {len(ports)}-node cluster...")
 
-        # Build node addresses
-        node_addresses = [f"{bind_ip}:{port}" for port in ports]
+        # Use target_ip for cluster creation (where to connect)
+        cluster_ip = self.target_ip
+        node_addresses = [f"{cluster_ip}:{port}" for port in ports]
 
         cmd = (
             [f"{self.valkey_path}/src/valkey-cli", "--cluster", "create"]

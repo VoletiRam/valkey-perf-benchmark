@@ -784,6 +784,7 @@ def run_module_tests(args: argparse.Namespace, module_config: dict) -> None:
                         results_dir=str(results_dir),
                         valkey_path=str(valkey_dir),
                         cores=server_core_range,
+                        target_ip=args.target_ip,
                     )
                     launcher.launch(
                         cluster_mode=module_config.get("cluster_mode", False),
