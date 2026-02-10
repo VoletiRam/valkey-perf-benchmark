@@ -833,6 +833,11 @@ class ClientRunner:
 
         cmd += ["--csv"]
 
+        # Add --cluster flag for ingestion in multi-node clusters
+        if scenario.get("type") == "ingestion":
+            if self.cluster_mode and self.config.get("cluster_nodes"):
+                cmd += ["--cluster"]
+
         # Add the command - split into individual arguments
         cmd += ["--"]
         cmd += shlex.split(scenario["command"])

@@ -20,6 +20,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
+      - name: Checkout valkey_ram (for dataset-enabled valkey-benchmark)
+        uses: actions/checkout@v4
+        with:
+          repository: VoletiRam/valkey_ram
+          ref: dataset-support
+          path: valkey_ram
+          fetch-depth: 1
+
       - name: Checkout valkey
         uses: actions/checkout@v4
         with:
@@ -55,6 +63,21 @@ jobs:
           sudo apt-get install -y build-essential gcc g++ make cmake \
               python3-dev libssl-dev
           pip install -r requirements.txt
+
+      - name: Build valkey_ram (for dataset-enabled valkey-benchmark)
+        working-directory: valkey_ram
+        run: |
+          echo "Building valkey_ram valkey-benchmark..."
+          make distclean || true
+          make -j$(nproc)
+          
+          if [ -f "src/valkey-benchmark" ]; then
+            echo "✓ valkey-benchmark with dataset support built"
+            ls -lh src/valkey-benchmark
+          else
+            echo "✗ valkey-benchmark build failed"
+            exit 1
+          fi
 
       - name: Build valkey-server
         working-directory: valkey
@@ -95,6 +118,7 @@ jobs:
           python benchmark.py \
             --module search \
             --valkey-path ../valkey \
+            --valkey-benchmark-path ../valkey_ram/src/valkey-benchmark \
             --module-path ../valkey-search/.build-release/libsearch.so \
             --config configs/module-test-arm.json \
             --mode both \

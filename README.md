@@ -459,6 +459,23 @@ Module tests use structured `test_groups` with `scenarios`:
 }
 ```
 
+### Cluster Mode Support
+
+**Multi-node clusters:** Config with `cluster_mode` array runs both single-node and distributed tests:
+
+```json
+{
+  "cluster_mode": [false, true],
+  "cluster_nodes": 5,
+  "cluster_ports": [6379, 6380, 6381, 6382, 6383],
+  "cluster_cpu_ranges": ["0-7", "8-15", "16-23", "24-31", "32-39"],
+  "module_startup_args": "--use-coordinator"
+}
+```
+
+**Filter modes:** `--cluster-mode-filter [false|true]` runs specific mode only.  
+**Key pattern:** Use `{tag}` in HSET for cluster routing: `HSET rd0-{tag}:__rand_int__`
+
 ### Setting Up PR Benchmarks
 
 Both valkey core and module repositories can set up automated PR benchmarking using our unified workflow template.

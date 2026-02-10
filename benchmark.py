@@ -166,6 +166,16 @@ def parse_args() -> argparse.Namespace:
         "Use for quick benchmarks or when profiling overhead is unwanted.",
     )
 
+    parser.add_argument(
+        "--cluster-mode-filter",
+        choices=["false", "true"],
+        default=None,
+        help="Filter which cluster_mode to run. "
+        "'false' runs only non-cluster tests, 'true' runs only cluster tests. "
+        "If not specified, runs all modes in config. "
+        "Used with configs that have cluster_mode as array (e.g., [false, true]).",
+    )
+
     args, unknown = parser.parse_known_args()
     if unknown:
         parser.error(f"Unrecognized arguments: {' '.join(unknown)}")
@@ -420,6 +430,10 @@ def validate_module_config(cfg: dict) -> None:
             if not isinstance(cs, dict):
                 raise ValueError(f"config_sets[{i}] must be a dict")
 
+    if "module_startup_args" in cfg:
+        if not isinstance(cfg["module_startup_args"], str):
+            raise ValueError("'module_startup_args' must be a string")
+
     if "profiling_sets" in cfg:
         if not isinstance(cfg["profiling_sets"], list):
             raise ValueError("'profiling_sets' must be a list")
@@ -504,6 +518,7 @@ def run_benchmark_matrix(
                 cluster_mode=cfg["cluster_mode"],
                 tls_mode=cfg["tls_mode"],
                 io_threads=io_threads,
+                config=cfg,
             )
 
         # ---- benchmarking client section -----------------
@@ -707,6 +722,25 @@ def run_module_tests(args: argparse.Namespace, module_config: dict) -> None:
     if "fts_tests" in module_config and "test_groups" not in module_config:
         module_config["test_groups"] = module_config["fts_tests"]
 
+    # Handle cluster_mode filtering for unified configs
+    cluster_modes = module_config.get("cluster_mode")
+    if isinstance(cluster_modes, list):
+        # Filter based on --cluster-mode-filter if specified
+        if args.cluster_mode_filter is not None:
+            filter_value = parse_bool(args.cluster_mode_filter)
+            cluster_modes = [
+                cm for cm in cluster_modes if parse_bool(cm) == filter_value
+            ]
+            if not cluster_modes:
+                logging.warning(
+                    f"No cluster modes match filter {args.cluster_mode_filter}, exiting"
+                )
+                return
+            logging.info(f"Filtered to cluster_mode: {cluster_modes}")
+    else:
+        # Single cluster_mode value
+        cluster_modes = [cluster_modes]
+
     config_sets = module_config.get("config_sets", [{}])
 
     # Override profiling and config sets if skip-profiling is enabled
@@ -723,99 +757,109 @@ def run_module_tests(args: argparse.Namespace, module_config: dict) -> None:
 
     init_logging(results_dir / "logs.txt", args.log_level)
 
-    for profiling_set_idx, profiling_set in enumerate(profiling_sets):
-        profiling_enabled = profiling_set.get("enabled", False)
-        logging.info(f"=== Testing with profiling: {profiling_enabled} ===")
+    # Loop through cluster modes (for unified configs)
+    for cluster_mode in cluster_modes:
+        logging.info(f"=== Testing with cluster_mode: {cluster_mode} ===")
 
-        for config_set in config_sets:
-            if config_set:
-                label_parts = [f"{k.split('.')[-1]}{v}" for k, v in config_set.items()]
-                config_suffix = "_".join(label_parts)
-            else:
-                config_suffix = "default"
+        # Set cluster_mode for this iteration
+        module_config["cluster_mode"] = parse_bool(cluster_mode)
 
-            logging.info(f"=== Testing with config: {config_set or 'default'} ===")
+        for profiling_set_idx, profiling_set in enumerate(profiling_sets):
+            profiling_enabled = profiling_set.get("enabled", False)
+            logging.info(f"=== Testing with profiling: {profiling_enabled} ===")
 
-            launcher = None
-            if not args.use_running_server and args.mode == "both":
-                server_core_range = module_config.get("server_cpu_range")
+            for config_set in config_sets:
+                if config_set:
+                    label_parts = [
+                        f"{k.split('.')[-1]}{v}" for k, v in config_set.items()
+                    ]
+                    config_suffix = "_".join(label_parts)
+                else:
+                    config_suffix = "default"
 
-                launcher = ServerLauncher(
-                    results_dir=str(results_dir),
-                    valkey_path=str(valkey_dir),
-                    cores=server_core_range,
-                )
-                launcher.launch(
+                logging.info(f"=== Testing with config: {config_set or 'default'} ===")
+
+                launcher = None
+                if not args.use_running_server and args.mode == "both":
+                    server_core_range = module_config.get("server_cpu_range")
+
+                    launcher = ServerLauncher(
+                        results_dir=str(results_dir),
+                        valkey_path=str(valkey_dir),
+                        cores=server_core_range,
+                    )
+                    launcher.launch(
+                        cluster_mode=module_config.get("cluster_mode", False),
+                        tls_mode=module_config.get("tls_mode", False),
+                        io_threads=module_config.get("io-threads"),
+                        module_path=module_path,
+                        config=module_config,
+                    )
+
+                if config_set:
+                    import valkey
+
+                    target_ip = args.target_ip
+                    client = valkey.Valkey(
+                        host=target_ip, port=module_config.get("port", 6379)
+                    )
+
+                    # Skip CONFIG SET if requested (for servers that don't support these parameters)
+                    if args.skip_config_set:
+                        logging.warning(
+                            f"--skip-config-set enabled - skipping CONFIG SET commands: {list(config_set.keys())}"
+                        )
+                        logging.info(
+                            "Server will run with default configuration. "
+                            "For fair comparison, ensure server settings are appropriate for the benchmark."
+                        )
+                    else:
+                        # Execute CONFIG SET commands
+                        for config_key, config_value in config_set.items():
+                            try:
+                                client.execute_command(
+                                    "CONFIG", "SET", config_key, str(config_value)
+                                )
+                                logging.info(f"Set {config_key} = {config_value}")
+                            except Exception as e:
+                                logging.error(f"Failed to set {config_key}: {e}")
+                                raise
+
+                    client.close()
+
+                commit_id = module_config.get("commit_id", "HEAD")
+                target_ip = args.target_ip
+                cores = module_config.get("client_cpu_range")
+
+                runner = ClientRunner(
+                    commit_id=commit_id,
+                    config=module_config,
                     cluster_mode=module_config.get("cluster_mode", False),
                     tls_mode=module_config.get("tls_mode", False),
-                    io_threads=module_config.get("io-threads"),
-                    module_path=module_path,
+                    target_ip=target_ip,
+                    results_dir=results_dir,
+                    valkey_path=str(valkey_dir),
+                    cores=cores,
+                    valkey_benchmark_path=valkey_benchmark_path,
+                    runs=1,
+                    server_launcher=launcher,
+                    architecture=architecture,
+                    module_config=module_config,
                 )
 
-            if config_set:
-                import valkey
+                runner.current_profiling_set = profiling_set
+                runner.current_config_set = config_set
+                runner.config_suffix = config_suffix
 
-                target_ip = args.target_ip
-                client = valkey.Valkey(
-                    host=target_ip, port=module_config.get("port", 6379)
+                runner.wait_for_server_ready()
+                runner.run_benchmark_config()
+
+                if launcher and not args.use_running_server:
+                    launcher.shutdown(module_config.get("tls_mode", False))
+
+                logging.info(
+                    f"=== Completed testing with config: {config_set or 'default'} and profiling: {profiling_enabled} ==="
                 )
-
-                # Skip CONFIG SET if requested (for servers that don't support these parameters)
-                if args.skip_config_set:
-                    logging.warning(
-                        f"--skip-config-set enabled - skipping CONFIG SET commands: {list(config_set.keys())}"
-                    )
-                    logging.info(
-                        "Server will run with default configuration. "
-                        "For fair comparison, ensure server settings are appropriate for the benchmark."
-                    )
-                else:
-                    # Execute CONFIG SET commands
-                    for config_key, config_value in config_set.items():
-                        try:
-                            client.execute_command(
-                                "CONFIG", "SET", config_key, str(config_value)
-                            )
-                            logging.info(f"Set {config_key} = {config_value}")
-                        except Exception as e:
-                            logging.error(f"Failed to set {config_key}: {e}")
-                            raise
-
-                client.close()
-
-            commit_id = module_config.get("commit_id", "HEAD")
-            target_ip = args.target_ip
-            cores = module_config.get("client_cpu_range")
-
-            runner = ClientRunner(
-                commit_id=commit_id,
-                config=module_config,
-                cluster_mode=module_config.get("cluster_mode", False),
-                tls_mode=module_config.get("tls_mode", False),
-                target_ip=target_ip,
-                results_dir=results_dir,
-                valkey_path=str(valkey_dir),
-                cores=cores,
-                valkey_benchmark_path=valkey_benchmark_path,
-                runs=1,
-                server_launcher=launcher,
-                architecture=architecture,
-                module_config=module_config,
-            )
-
-            runner.current_profiling_set = profiling_set
-            runner.current_config_set = config_set
-            runner.config_suffix = config_suffix
-
-            runner.wait_for_server_ready()
-            runner.run_benchmark_config()
-
-            if launcher and not args.use_running_server:
-                launcher.shutdown(module_config.get("tls_mode", False))
-
-            logging.info(
-                f"=== Completed testing with config: {config_set or 'default'} and profiling: {profiling_enabled} ==="
-            )
 
     logging.info(f"=== Module testing complete for {args.module} ===")
 
