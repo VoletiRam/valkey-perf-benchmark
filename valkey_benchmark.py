@@ -97,9 +97,10 @@ class ClientRunner:
         self.architecture = architecture
         self.module_config = module_config
 
-    def _create_client(self) -> valkey.Valkey:
+    def _create_client(self, port: Optional[int] = None) -> valkey.Valkey:
         """Return a Valkey client configured for TLS or plain mode."""
-        port = self.config.get("port", DEFAULT_PORT)
+        if port is None:
+            port = self.config.get("port", DEFAULT_PORT)
         logging.info(f"Connecting to {self.target_ip}:{port}")
         kwargs = {
             "host": self.target_ip,
@@ -219,9 +220,18 @@ class ClientRunner:
         """Flush all data from the database before benchmark runs."""
         logging.info("Flushing database before benchmark run")
         try:
-            with self._client_context() as client:
+            # Get ports to flush (multi-node or single)
+            if self.cluster_mode and self.config.get("cluster_ports"):
+                ports = self.config["cluster_ports"]
+            else:
+                ports = [self.config.get("port", 6379)]
+
+            # Flush all nodes
+            for port in ports:
+                client = self._create_client(port=port)
                 client.flushall(asynchronous=False)
-                logging.info("Database flushed successfully")
+                client.close()
+                logging.info(f"Flushed database on port {port}")
         except Exception as e:
             logging.error(f"Failed to flush database: {e}")
             raise RuntimeError(f"Database flush failed: {e}")

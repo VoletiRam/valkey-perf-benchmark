@@ -798,11 +798,17 @@ def run_module_tests(args: argparse.Namespace, module_config: dict) -> None:
                     import valkey
 
                     target_ip = args.target_ip
-                    client = valkey.Valkey(
-                        host=target_ip, port=module_config.get("port", 6379)
-                    )
 
-                    # Skip CONFIG SET if requested (for servers that don't support these parameters)
+                    # Get ports to configure (multi-node or single)
+                    if (
+                        module_config.get("cluster_mode")
+                        and "cluster_ports" in module_config
+                    ):
+                        ports = module_config["cluster_ports"]
+                    else:
+                        ports = [module_config.get("port", 6379)]
+
+                    # Skip CONFIG SET if requested
                     if args.skip_config_set:
                         logging.warning(
                             f"--skip-config-set enabled - skipping CONFIG SET commands: {list(config_set.keys())}"
@@ -812,18 +818,24 @@ def run_module_tests(args: argparse.Namespace, module_config: dict) -> None:
                             "For fair comparison, ensure server settings are appropriate for the benchmark."
                         )
                     else:
-                        # Execute CONFIG SET commands
-                        for config_key, config_value in config_set.items():
+                        # Execute CONFIG SET on all nodes
+                        for port in ports:
+                            client = valkey.Valkey(host=target_ip, port=port)
                             try:
-                                client.execute_command(
-                                    "CONFIG", "SET", config_key, str(config_value)
-                                )
-                                logging.info(f"Set {config_key} = {config_value}")
+                                for config_key, config_value in config_set.items():
+                                    client.execute_command(
+                                        "CONFIG", "SET", config_key, str(config_value)
+                                    )
+                                    logging.info(
+                                        f"Set {config_key} = {config_value} on port {port}"
+                                    )
                             except Exception as e:
-                                logging.error(f"Failed to set {config_key}: {e}")
+                                logging.error(
+                                    f"Failed to set config on port {port}: {e}"
+                                )
+                                client.close()
                                 raise
-
-                    client.close()
+                            client.close()
 
                 commit_id = module_config.get("commit_id", "HEAD")
                 target_ip = args.target_ip
