@@ -731,8 +731,24 @@ class ClientRunner:
                                 "requests"
                             ) or expanded_scenario.get("maxdocs")
 
-                            # Parse CSV output (same as core)
-                            reader = csv.DictReader(proc.stdout.splitlines())
+                            # Parse CSV output - find header line first (skip dataset loading messages)
+                            lines = proc.stdout.splitlines()
+                            csv_start = None
+                            for i, line in enumerate(lines):
+                                if line.startswith('"test","rps"') or line.startswith(
+                                    "test,rps"
+                                ):
+                                    csv_start = i
+                                    break
+
+                            if csv_start is None:
+                                logging.warning(
+                                    f"No CSV header found in benchmark output for {scenario_id}"
+                                )
+                                continue
+
+                            # Parse CSV from header line onwards
+                            reader = csv.DictReader(lines[csv_start:])
                             for row in reader:
                                 metrics = metrics_processor.create_metrics(
                                     row,
