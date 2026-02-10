@@ -226,6 +226,20 @@ class ClientRunner:
             else:
                 ports = [self.config.get("port", 6379)]
 
+            # Drop indexes first (coordinator metadata persists across FLUSHALL)
+            try:
+                first_client = self._create_client(port=ports[0])
+                indexes = first_client.execute_command("FT._LIST")
+                for idx in indexes:
+                    try:
+                        first_client.execute_command("FT.DROPINDEX", idx)
+                        logging.info(f"Dropped index {idx}")
+                    except Exception as e:
+                        logging.warning(f"Could not drop index {idx}: {e}")
+                first_client.close()
+            except Exception as e:
+                logging.warning(f"Could not list/drop indexes: {e}")
+
             # Flush all nodes
             for port in ports:
                 client = self._create_client(port=port)
