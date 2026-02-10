@@ -362,9 +362,10 @@ def validate_shared_fields(cfg: dict) -> None:
         if not isinstance(cfg["port"], int) or cfg["port"] <= 0 or cfg["port"] > 65535:
             raise ValueError("'port' must be between 1 and 65535")
 
-    # Boolean fields
+    # Boolean fields (skip cluster_mode if it's a list for unified configs)
     if "cluster_mode" in cfg:
-        cfg["cluster_mode"] = parse_bool(cfg["cluster_mode"])
+        if not isinstance(cfg["cluster_mode"], list):
+            cfg["cluster_mode"] = parse_bool(cfg["cluster_mode"])
 
     if "tls_mode" in cfg:
         cfg["tls_mode"] = parse_bool(cfg["tls_mode"])
@@ -722,24 +723,20 @@ def run_module_tests(args: argparse.Namespace, module_config: dict) -> None:
     if "fts_tests" in module_config and "test_groups" not in module_config:
         module_config["test_groups"] = module_config["fts_tests"]
 
-    # Handle cluster_mode filtering for unified configs
-    cluster_modes = module_config.get("cluster_mode")
-    if isinstance(cluster_modes, list):
-        # Filter based on --cluster-mode-filter if specified
-        if args.cluster_mode_filter is not None:
-            filter_value = parse_bool(args.cluster_mode_filter)
-            cluster_modes = [
-                cm for cm in cluster_modes if parse_bool(cm) == filter_value
-            ]
-            if not cluster_modes:
-                logging.warning(
-                    f"No cluster modes match filter {args.cluster_mode_filter}, exiting"
-                )
-                return
-            logging.info(f"Filtered to cluster_mode: {cluster_modes}")
+    # Handle cluster_mode override/filtering
+    if args.cluster_mode_filter is not None:
+        # CLI overrides config entirely
+        override_value = parse_bool(args.cluster_mode_filter)
+        cluster_modes = [override_value]
+        logging.info(f"CLI override: cluster_mode={override_value} (ignoring config)")
     else:
-        # Single cluster_mode value
-        cluster_modes = [cluster_modes]
+        # Use config value(s)
+        cluster_modes = module_config.get("cluster_mode")
+        if isinstance(cluster_modes, list):
+            logging.info(f"Using cluster_modes from config: {cluster_modes}")
+        else:
+            cluster_modes = [cluster_modes]
+            logging.info(f"Using single cluster_mode from config: {cluster_modes}")
 
     config_sets = module_config.get("config_sets", [{}])
 
