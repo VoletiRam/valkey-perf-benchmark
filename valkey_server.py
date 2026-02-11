@@ -436,7 +436,11 @@ class ServerLauncher:
                 logging.info(f"Launching {config['cluster_nodes']}-node cluster...")
 
                 ports = config["cluster_ports"]
-                cpu_ranges = config["cluster_cpu_ranges"]
+
+                cpu_ranges = config.get("server_cpu_ranges", [])
+                if not cpu_ranges:
+                    cpu_ranges = config.get("cluster_cpu_ranges", [])
+
                 bind_ip = config.get("bind_ip")
 
                 # Launch all nodes
@@ -512,7 +516,7 @@ class ServerLauncher:
 
         # Fallback: kill any remaining processes
         try:
-            self._run(["pkill", "-f", VALKEY_SERVER], timeout=10)
+            subprocess.run(["pkill", "-f", VALKEY_SERVER], timeout=10, check=False)
         except:
             pass
 

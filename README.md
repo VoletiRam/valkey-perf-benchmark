@@ -437,7 +437,8 @@ Module tests use structured `test_groups` with `scenarios`:
     "group": 1,
     "scenarios": [
       {
-        "type": "ingestion",
+        "type": "write",
+        "cluster_execution": "single",
         "setup_commands": ["FT.CREATE idx ..."],
         "command": "HSET ...",
         "dataset": "data.xml",
@@ -445,7 +446,8 @@ Module tests use structured `test_groups` with `scenarios`:
         "maxdocs": 50000
       },
       {
-        "type": "search",
+        "type": "read",
+        "cluster_execution": "parallel",
         "command": "FT.SEARCH idx __field:term__",
         "dataset": "queries.csv",
         "clients": 1000,
@@ -468,10 +470,42 @@ Module tests use structured `test_groups` with `scenarios`:
   "cluster_mode": [false, true],
   "cluster_nodes": 5,
   "cluster_ports": [6379, 6380, 6381, 6382, 6383],
-  "cluster_cpu_ranges": ["0-7", "8-15", "16-23", "24-31", "32-39"],
+  "cpu_allocation": {
+    "cores_per_server": 8,
+    "cores_per_client": 8,
+    "servers": ["0-7", "8-15", "16-23", "24-31", "32-39"],
+    "clients": ["40-47", "48-55", "56-63", "64-71", "72-79"]
+  },
   "module_startup_args": "--use-coordinator"
 }
 ```
+
+**CPU Allocation**: Two methods (mutually exclusive):
+1. **New (recommended)**: `cpu_allocation` object
+   - **Automatic**: Provide `cores_per_server` + `cores_per_client`
+     ```json
+     "cpu_allocation": {
+       "cores_per_server": 8,
+       "cores_per_client": 8
+     }
+     ```
+     Framework calculates ranges: servers [0-7, 8-15, 16-23...], clients [40-47, 48-55...]
+   
+   - **Manual override**: Provide `servers` + `clients` arrays
+     ```json
+     "cpu_allocation": {
+       "servers": ["0-7", "8-15", "16-23", "24-31", "32-39"],
+       "clients": ["40-47", "48-55", "56-63", "64-71", "72-79"]
+     }
+     ```
+     Explicit ranges used as-is (cores_per_* ignored if present)
+
+2. **Old**: `server_cpu_range` + `client_cpu_range` (single-node only)
+
+**CME Parallel Execution**: Scenarios can specify execution strategy:
+- `"cluster_execution": "single"` - One client with cluster routing (default)
+- `"cluster_execution": "parallel"` - N clients (one per node), aggregated metrics
+- Optional: `"parallel_clients": 10` - Custom client count
 
 **Filter modes:** `--cluster-mode-filter [false|true]` runs specific mode only.  
 **Key pattern:** Use `{tag}` in HSET for cluster routing: `HSET rd0-{tag}:__rand_int__`
@@ -799,19 +833,19 @@ Scenario overrides any profiling_set values.
   "profiling_sets": [{
     "enabled": true,
     "delays": {
-      "ingestion": {"delay": 0, "duration": 10},
-      "search": {"delay": 30, "duration": 10}
+      "write": {"delay": 0, "duration": 10},
+      "read": {"delay": 30, "duration": 10}
     }
   }],
   "scenarios": [{
     "id": "a",
-    "type": "ingestion",
-    "profiling": {"delays": {"ingestion": {"delay": 10, "duration": 10}}}
+    "type": "write",
+    "profiling": {"delays": {"write": {"delay": 10, "duration": 10}}}
   }]
 }
 ```
 
-Group 1 ingestion uses 10s delay (dataset loading), others use 0s (immediate).
+Group 1 write scenario uses 10s delay (dataset loading), others use 0s (immediate).
 
 ## License
 

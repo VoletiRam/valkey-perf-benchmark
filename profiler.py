@@ -101,21 +101,27 @@ class PerformanceProfiler:
         self,
         test_id: str,
         target_process: str = "valkey-server",
+        target_port: Optional[int] = None,
     ) -> None:
         """Start performance profiling for a test.
 
         Args:
             test_id: Identifier for this profiling session (e.g., "ingestion_1", "search_1a")
             target_process: Process name to profile
+            target_port: Optional port number to target specific node in cluster (e.g., 6379 for node 0)
         """
         if not self.enabled:
             return
 
-        # Determine phase (ingestion or search) from test_id
-        phase_key = "ingestion" if "ingestion" in test_id.lower() else "search"
+        test_id_lower = test_id.lower()
+        if "write" in test_id_lower:
+            phase_key = "write"
+        elif "read" in test_id_lower:
+            phase_key = "read"
+        else:
+            phase_key = None
 
-        # Get delay and duration from delays structure
-        phase_delays = self.delays.get(phase_key, {})
+        phase_delays = self.delays.get(phase_key, {}) if phase_key else {}
         delay = phase_delays.get("delay", 0)
         duration = phase_delays.get("duration", 10)
 
@@ -123,29 +129,59 @@ class PerformanceProfiler:
 
         self.profiling_thread = threading.Thread(
             target=self._profiling_worker,
-            args=(test_id, target_process, delay, duration),
+            args=(test_id, target_process, delay, duration, target_port),
             daemon=True,
         )
         self.profiling_thread.start()
+
+        port_info = f", port={target_port}" if target_port else ""
         logging.info(
-            f"Profiling started: {test_id} (delay={delay}s, duration={duration}s)"
+            f"Profiling started: {test_id} (delay={delay}s, duration={duration}s{port_info})"
         )
 
     def _profiling_worker(
-        self, test_id: str, target_process: str, delay: int, duration: int
+        self,
+        test_id: str,
+        target_process: str,
+        delay: int,
+        duration: int,
+        target_port: Optional[int] = None,
     ) -> None:
-        """Delayed profiling worker."""
+        """Delayed profiling worker.
+
+        Args:
+            test_id: Profiling session identifier
+            target_process: Process name to profile
+            delay: Seconds to wait before profiling
+            duration: Seconds to profile
+            target_port: Optional port to target specific node (e.g., 6379 for node 0)
+        """
         try:
             time.sleep(delay)
 
+            # Build pgrep pattern (port-specific or generic)
+            if target_port:
+                # Target specific node by port (e.g., "valkey-server.*:6379")
+                pattern = f"{target_process}.*:{target_port}"
+                logging.info(f"Targeting process: {pattern}")
+            else:
+                # Generic pattern (backward compatible)
+                pattern = target_process
+
             proc = subprocess.run(
-                ["pgrep", "-f", target_process], capture_output=True, text=True
+                ["pgrep", "-f", pattern], capture_output=True, text=True
             )
             if proc.returncode != 0:
-                logging.warning(f"Process {target_process} not found")
+                logging.warning(f"Process matching '{pattern}' not found")
                 return
 
-            server_pid = proc.stdout.strip().split()[0]
+            pids = proc.stdout.strip().split()
+            if not pids:
+                logging.warning(f"No PIDs found for pattern '{pattern}'")
+                return
+
+            server_pid = pids[0]
+            logging.info(f"Profiling PID {server_pid} (pattern: {pattern})")
             perf_data = self.results_dir / f"{test_id}_{self.timestamp}.perf.data"
 
             perf_cmd = ["/usr/bin/sudo", "perf", "record"]

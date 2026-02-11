@@ -4,9 +4,10 @@
 import argparse
 import json
 import logging
+import os
 import platform
 from pathlib import Path
-from typing import List, Union
+from typing import List, Optional, Union
 import sys
 
 
@@ -35,6 +36,18 @@ OPTIONAL_CONF_KEYS = [
     "benchmark-threads",
     "requests",
     "duration",
+    "test_groups",
+    "cpu_allocation",
+    "cluster_nodes",
+    "cluster_ports",
+    "bind_ip",
+    "config_sets",
+    "profiling_sets",
+    "monitoring",
+    "dataset_generation",
+    "query_generation",
+    "port",
+    "module_startup_args",
 ]
 
 
@@ -182,85 +195,121 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
+# ---------- Validation Helpers -----------------------------------------------
+
+
+def _validate_positive_int_list(value, key_name: str) -> None:
+    """Validate value is a list of positive integers."""
+    if not isinstance(value, list) or not all(
+        isinstance(x, int) and x > 0 for x in value
+    ):
+        raise ValueError(f"'{key_name}' must be a list of positive integers")
+
+
+def _validate_positive_int(value, key_name: str) -> None:
+    """Validate value is a positive integer."""
+    if not isinstance(value, int) or value <= 0:
+        raise ValueError(f"'{key_name}' must be a positive integer")
+
+
+def _validate_non_negative_int(value, key_name: str) -> None:
+    """Validate value is a non-negative integer."""
+    if not isinstance(value, int) or value < 0:
+        raise ValueError(f"'{key_name}' must be a non-negative integer")
+
+
+def _validate_positive_int_or_list(value, key_name: str) -> None:
+    """Validate value is positive int or list of positive ints."""
+    if isinstance(value, int):
+        if value <= 0:
+            raise ValueError(f"'{key_name}' must be positive")
+    elif isinstance(value, list):
+        if not all(isinstance(x, int) and x > 0 for x in value):
+            raise ValueError(f"'{key_name}' must be list of positive integers")
+    else:
+        raise ValueError(f"'{key_name}' must be int or list")
+
+
+def _validate_cpu_range(value, key_name: str) -> None:
+    """Validate CPU range string."""
+    if not isinstance(value, str):
+        raise ValueError(f"'{key_name}' must be a string")
+    try:
+        parse_core_range(value)
+    except ValueError as e:
+        raise ValueError(f"Invalid {key_name}: {e}")
+
+
 # ---------- Helpers ----------------------------------------------------------
 
 
 def validate_config(cfg: dict) -> None:
-    """Ensure all required keys exist and have valid values in ``cfg``."""
-    for k in REQUIRED_KEYS:
-        if k not in cfg:
-            raise ValueError(f"Missing required config key: {k}")
+    """Validate config (commands or test_groups format)."""
+    if "scenarios" in cfg and "test_groups" not in cfg:
+        cfg["test_groups"] = [{"scenarios": cfg["scenarios"]}]
+        del cfg["scenarios"]
 
-    # Validate that either requests or duration is provided
-    has_requests = "requests" in cfg and cfg["requests"] is not None
-    has_duration = "duration" in cfg and cfg["duration"] is not None
+    has_commands = "commands" in cfg
+    has_test_groups = "test_groups" in cfg
 
-    if not has_requests and not has_duration:
-        raise ValueError("Either 'requests' or 'duration' must be provided")
+    if not (has_commands or has_test_groups):
+        raise ValueError("Config must have either 'commands' or 'test_groups'")
 
-    if has_requests and has_duration:
-        raise ValueError("Cannot specify both 'requests' and 'duration' - use only one")
+    if has_commands:
+        for k in REQUIRED_KEYS:
+            if k not in cfg:
+                raise ValueError(f"Missing required key: {k}")
 
-    # Validate required data types and ranges
-    if not isinstance(cfg["keyspacelen"], list) or not all(
-        isinstance(x, int) and x > 0 for x in cfg["keyspacelen"]
-    ):
-        raise ValueError("'keyspacelen' must be a list of positive integers")
+        has_requests = "requests" in cfg and cfg["requests"] is not None
+        has_duration = "duration" in cfg and cfg["duration"] is not None
 
-    if not isinstance(cfg["data_sizes"], list) or not all(
-        isinstance(x, int) and x > 0 for x in cfg["data_sizes"]
-    ):
-        raise ValueError("'data_sizes' must be a list of positive integers")
+        if not has_requests and not has_duration:
+            raise ValueError("Either 'requests' or 'duration' must be provided")
+        if has_requests and has_duration:
+            raise ValueError("Cannot specify both 'requests' and 'duration'")
 
-    if not isinstance(cfg["pipelines"], list) or not all(
-        isinstance(x, int) and x > 0 for x in cfg["pipelines"]
-    ):
-        raise ValueError("'pipelines' must be a list of positive integers")
+        # Use helpers for validation
+        _validate_positive_int_list(cfg["keyspacelen"], "keyspacelen")
+        _validate_positive_int_list(cfg["data_sizes"], "data_sizes")
+        _validate_positive_int_list(cfg["pipelines"], "pipelines")
+        _validate_positive_int_list(cfg["clients"], "clients")
+        _validate_non_negative_int(cfg["warmup"], "warmup")
 
-    if not isinstance(cfg["clients"], list) or not all(
-        isinstance(x, int) and x > 0 for x in cfg["clients"]
-    ):
-        raise ValueError("'clients' must be a list of positive integers")
+        # Validate commands (special case: non-empty strings)
+        if (
+            not isinstance(cfg["commands"], list)
+            or not cfg["commands"]
+            or not all(isinstance(x, str) and x.strip() for x in cfg["commands"])
+        ):
+            raise ValueError("'commands' must be a non-empty list of non-empty strings")
 
-    if (
-        not isinstance(cfg["commands"], list)
-        or not cfg["commands"]
-        or not all(isinstance(x, str) and x.strip() for x in cfg["commands"])
-    ):
-        raise ValueError("'commands' must be a non-empty list of non-empty strings")
+    if has_test_groups:
+        validate_test_groups(cfg)
 
-    if not isinstance(cfg["warmup"], int) or cfg["warmup"] < 0:
-        raise ValueError("'warmup' must be a non-negative integer")
+    # Validate optional keys using helpers
+    if "io-threads" in cfg:
+        _validate_positive_int_or_list(cfg["io-threads"], "io-threads")
+    if "benchmark-threads" in cfg:
+        _validate_positive_int(cfg["benchmark-threads"], "benchmark-threads")
+    if "requests" in cfg and cfg["requests"] is not None:
+        _validate_positive_int_list(cfg["requests"], "requests")
+    if "duration" in cfg and cfg["duration"] is not None:
+        _validate_positive_int(cfg["duration"], "duration")
+    if "server_cpu_range" in cfg:
+        _validate_cpu_range(cfg["server_cpu_range"], "server_cpu_range")
+    if "client_cpu_range" in cfg:
+        _validate_cpu_range(cfg["client_cpu_range"], "client_cpu_range")
+    if "module_startup_args" in cfg:
+        if not isinstance(cfg["module_startup_args"], str):
+            raise ValueError("'module_startup_args' must be string")
+    if "port" in cfg:
+        if not isinstance(cfg["port"], int) or cfg["port"] <= 0 or cfg["port"] > 65535:
+            raise ValueError("'port' must be between 1 and 65535")
 
-    # Validate optional core-specific fields
-    for k in OPTIONAL_CONF_KEYS:
-        if k in cfg:
-            # Validate optional benchmark-threads
-            if k == "benchmark-threads":
-                if (
-                    not isinstance(cfg["benchmark-threads"], int)
-                    or cfg["benchmark-threads"] <= 0
-                ):
-                    raise ValueError("'benchmark-threads' must be a positive integer")
-            # Validate optional requests
-            elif k == "requests":
-                if cfg["requests"] is not None:
-                    if not isinstance(cfg["requests"], list) or not all(
-                        isinstance(x, int) and x > 0 for x in cfg["requests"]
-                    ):
-                        raise ValueError(
-                            "'requests' must be a list of positive integers or null"
-                        )
-            # Validate optional duration
-            elif k == "duration":
-                if cfg["duration"] is not None:
-                    if not isinstance(cfg["duration"], int) or cfg["duration"] <= 0:
-                        raise ValueError(
-                            "'duration' must be a positive integer or null"
-                        )
-
-    # Validate shared infrastructure fields
-    validate_shared_fields(cfg)
+    if "cluster_mode" in cfg and not isinstance(cfg["cluster_mode"], list):
+        cfg["cluster_mode"] = parse_bool(cfg["cluster_mode"])
+    if "tls_mode" in cfg:
+        cfg["tls_mode"] = parse_bool(cfg["tls_mode"])
 
 
 def load_configs(path: str) -> List[dict]:
@@ -269,8 +318,6 @@ def load_configs(path: str) -> List[dict]:
         configs = json.load(fp)
     for c in configs:
         validate_config(c)
-        c["cluster_mode"] = parse_bool(c["cluster_mode"])
-        c["tls_mode"] = parse_bool(c["tls_mode"])
     return configs
 
 
@@ -354,60 +401,83 @@ def parse_bool(value) -> bool:
     return bool(value)
 
 
-def validate_shared_fields(cfg: dict) -> None:
-    """Validate infrastructure fields shared by core and module configs."""
-
-    # Port validation
-    if "port" in cfg:
-        if not isinstance(cfg["port"], int) or cfg["port"] <= 0 or cfg["port"] > 65535:
-            raise ValueError("'port' must be between 1 and 65535")
-
-    # Boolean fields (skip cluster_mode if it's a list for unified configs)
-    if "cluster_mode" in cfg:
-        if not isinstance(cfg["cluster_mode"], list):
-            cfg["cluster_mode"] = parse_bool(cfg["cluster_mode"])
-
-    if "tls_mode" in cfg:
-        cfg["tls_mode"] = parse_bool(cfg["tls_mode"])
-
-    # io-threads validation
-    if "io-threads" in cfg:
-        io_threads = cfg["io-threads"]
-        if isinstance(io_threads, int):
-            if io_threads <= 0:
-                raise ValueError("'io-threads' must be positive")
-        elif isinstance(io_threads, list):
-            if not all(isinstance(x, int) and x > 0 for x in io_threads):
-                raise ValueError("'io-threads' list must contain positive integers")
-        else:
-            raise ValueError("'io-threads' must be int or list of ints")
-
-    # CPU ranges
-    for cpu_key in ["server_cpu_range", "client_cpu_range"]:
-        if cpu_key in cfg:
-            try:
-                parse_core_range(cfg[cpu_key])
-            except ValueError as e:
-                raise ValueError(f"Invalid {cpu_key}: {e}")
+def _get_active_ports(cfg: dict) -> List[int]:
+    """Return ports based on actual cluster mode (not config)."""
+    if cfg.get("cluster_mode") and "cluster_ports" in cfg:
+        return cfg["cluster_ports"]
+    return [cfg.get("port", 6379)]
 
 
-def validate_module_config(cfg: dict) -> None:
-    """Validate and normalize module config structure."""
+def calculate_cpu_ranges(
+    cluster_nodes: int, cores_per_unit: int, offset: int = 0
+) -> List[str]:
+    """Calculate CPU ranges for servers or clients."""
+    ranges = []
+    for i in range(cluster_nodes):
+        start = offset + i * cores_per_unit
+        end = start + cores_per_unit - 1
+        ranges.append(f"{start}-{end}")
+    return ranges
 
-    # Auto-wrap flat scenarios into default group
-    if "scenarios" in cfg and "test_groups" not in cfg:
-        cfg["test_groups"] = [
-            {
-                "group": 1,
-                "description": "Default test group",
-                "scenarios": cfg["scenarios"],
-            }
-        ]
-        del cfg["scenarios"]
 
-    # Validate test_groups structure (REQUIRED for modules)
+def calculate_server_cpu_ranges(cfg: dict) -> Optional[List[str]]:
+    """Calculate server CPU ranges from config."""
+    if "cpu_allocation" not in cfg:
+        return None
+
+    cpu_alloc = cfg["cpu_allocation"]
+    if "servers" in cpu_alloc:
+        return cpu_alloc["servers"]
+
+    cluster_nodes = cfg.get("cluster_nodes", 1)
+    return calculate_cpu_ranges(cluster_nodes, cpu_alloc["cores_per_server"])
+
+
+def calculate_client_cpu_ranges(cfg: dict) -> Optional[List[str]]:
+    """Calculate client CPU ranges from config."""
+    if "cpu_allocation" not in cfg:
+        return None
+
+    cpu_alloc = cfg["cpu_allocation"]
+    if "clients" in cpu_alloc:
+        return cpu_alloc["clients"]
+
+    cluster_nodes = cfg.get("cluster_nodes", 1)
+    offset = cluster_nodes * cpu_alloc["cores_per_server"]
+    return calculate_cpu_ranges(cluster_nodes, cpu_alloc["cores_per_client"], offset)
+
+
+def validate_cpu_allocation(cfg: dict) -> None:
+    """Validate CPU configuration (new cpu_allocation or old individual fields)."""
+    has_cpu_allocation = "cpu_allocation" in cfg
+    has_old_fields = "server_cpu_range" in cfg or "client_cpu_range" in cfg
+
+    # Mutually exclusive
+    if has_cpu_allocation and has_old_fields:
+        raise ValueError(
+            "Cannot use both cpu_allocation and server_cpu_range/client_cpu_range"
+        )
+
+    # Validate cpu_allocation (new)
+    if has_cpu_allocation:
+        cpu_alloc = cfg["cpu_allocation"]
+
+        if "cores_per_server" not in cpu_alloc or "cores_per_client" not in cpu_alloc:
+            raise ValueError(
+                "cpu_allocation requires both 'cores_per_server' and 'cores_per_client'"
+            )
+
+        if cpu_alloc["cores_per_server"] <= 0 or cpu_alloc["cores_per_client"] <= 0:
+            raise ValueError("cores_per_server and cores_per_client must be positive")
+
+    # Old fields validated in optional keys (format check)
+    # Both work for commands and test_groups formats
+
+
+def validate_test_groups(cfg: dict) -> None:
+    """Validate test_groups structure."""
     if "test_groups" not in cfg:
-        raise ValueError("Module config requires 'test_groups' or 'scenarios' field")
+        return
 
     test_groups = cfg["test_groups"]
     if not isinstance(test_groups, list) or len(test_groups) == 0:
@@ -423,147 +493,247 @@ def validate_module_config(cfg: dict) -> None:
         if not isinstance(group["scenarios"], list) or len(group["scenarios"]) == 0:
             raise ValueError(f"test_groups[{i}].scenarios must be a non-empty list")
 
-    # Validate module-specific optional fields
-    if "config_sets" in cfg:
-        if not isinstance(cfg["config_sets"], list):
-            raise ValueError("'config_sets' must be a list")
-        for i, cs in enumerate(cfg["config_sets"]):
-            if not isinstance(cs, dict):
-                raise ValueError(f"config_sets[{i}] must be a dict")
-
-    if "module_startup_args" in cfg:
-        if not isinstance(cfg["module_startup_args"], str):
-            raise ValueError("'module_startup_args' must be a string")
-
-    if "profiling_sets" in cfg:
-        if not isinstance(cfg["profiling_sets"], list):
-            raise ValueError("'profiling_sets' must be a list")
-        for i, ps in enumerate(cfg["profiling_sets"]):
-            if not isinstance(ps, dict):
-                raise ValueError(f"profiling_sets[{i}] must be a dict")
-            if "enabled" in ps and not isinstance(ps["enabled"], bool):
-                raise ValueError(f"profiling_sets[{i}].enabled must be a boolean")
-
-    # Validate shared infrastructure fields
-    validate_shared_fields(cfg)
-
 
 def run_benchmark_matrix(
     *,
     commit_id: str,
     cfg: dict,
     args: argparse.Namespace,
-    config_data: Union[dict, None] = None,
+    module_path: Optional[str] = None,
+    uses_test_groups: bool = False,
 ) -> None:
-    """Run benchmarks for all tls and cluster mode combinations.
+    """Orchestrate benchmark execution for all configurations."""
+    if args.module:
+        results_dir = args.results_dir / f"{args.module}_tests"
+    else:
+        results_dir = args.results_dir / commit_id
 
-    Args:
-        commit_id: Git commit SHA to benchmark
-        cfg: Benchmark configuration dictionary
-        args: Command line arguments
-        config_data: Full config data including file path and content for tracking
-    """
-    results_dir = ensure_results_dir(args.results_dir, commit_id)
-    init_logging(results_dir / "logs.txt", args.log_level)
+    results_dir.mkdir(parents=True, exist_ok=True)
+
     logging.info(f"Loaded config: {cfg}")
 
-    # Detect system architecture
     architecture = platform.machine()
     logging.info(f"Detected architecture: {architecture}")
-
-    server_core_range = cfg.get("server_cpu_range")
-    bench_core_range = cfg.get("client_cpu_range")
 
     valkey_dir = (
         Path(args.valkey_path) if args.valkey_path else Path(f"../valkey_{commit_id}")
     )
 
     builder = ServerBuilder(
-        commit_id=commit_id,
-        tls_mode=cfg["tls_mode"],
-        valkey_path=str(valkey_dir),
+        commit_id=commit_id, tls_mode=cfg["tls_mode"], valkey_path=str(valkey_dir)
     )
     if not args.use_running_server:
-        builder.build()
+        server_binary = valkey_dir / "src" / "valkey-server"
+        if server_binary.exists():
+            logging.info("Using existing valkey-server binary")
+        else:
+            logging.info("valkey-server binary not found, building...")
+            builder.build()
     else:
         logging.info("Using pre-built Valkey instance.")
 
     logging.info(
-        f"Commit {commit_id[:10]} | "
-        f"TLS={'on' if cfg['tls_mode'] else 'off'} | "
-        f"Cluster={'on' if cfg['cluster_mode'] else 'off'}"
+        f"Commit {commit_id[:10]} | TLS={'on' if cfg['tls_mode'] else 'off'} | Cluster={'on' if cfg['cluster_mode'] else 'off'}"
     )
 
-    # Get io_threads values - handle both single int and list
-    io_threads_values = cfg.get("io-threads")
-    if io_threads_values is None:
-        io_threads_list = [None]
-    elif isinstance(io_threads_values, int):
-        io_threads_list = [io_threads_values]
-    else:
-        io_threads_list = io_threads_values
+    client_cpu_ranges = calculate_client_cpu_ranges(cfg)
 
-    # Run benchmark for each io_threads value
-    for io_threads in io_threads_list:
-        logging.info(f"Running benchmark with io_threads={io_threads}")
+    for exec_config in _iterate_execution_configs(cfg, args):
+        _execute_benchmark_run(
+            exec_config,
+            args,
+            results_dir,
+            valkey_dir,
+            module_path,
+            uses_test_groups,
+            architecture,
+            client_cpu_ranges,
+        )
 
-        # ---- server section -----------------
-        launcher = None
-        if (not args.use_running_server) and args.mode == "both":
-            launcher = ServerLauncher(
-                results_dir=str(results_dir),
-                valkey_path=str(valkey_dir),
-                cores=server_core_range,
-            )
-            launcher.launch(
-                cluster_mode=cfg["cluster_mode"],
-                tls_mode=cfg["tls_mode"],
-                io_threads=io_threads,
-                config=cfg,
-            )
-
-        # ---- benchmarking client section -----------------
-        if args.mode in ("client", "both"):
-            # Determine valkey-benchmark path
-            if args.valkey_benchmark_path:
-                benchmark_path = str(args.valkey_benchmark_path)
-                logging.info(f"Using custom valkey-benchmark path: {benchmark_path}")
-            else:
-                logging.info(
-                    "No custom valkey-benchmark path provided, building latest unstable..."
-                )
-                benchmark_builder = BenchmarkBuilder(tls_enabled=cfg["tls_mode"])
-                benchmark_path = benchmark_builder.build_benchmark()
-                logging.info(f"Built fresh valkey-benchmark at: {benchmark_path}")
-
-            runner = ClientRunner(
-                commit_id=commit_id,
-                config=cfg,
-                cluster_mode=cfg["cluster_mode"],
-                tls_mode=cfg["tls_mode"],
-                target_ip=args.target_ip,
-                results_dir=results_dir,
-                valkey_path=str(valkey_dir),
-                cores=bench_core_range,
-                io_threads=io_threads,
-                valkey_benchmark_path=benchmark_path,
-                benchmark_threads=cfg.get("benchmark-threads"),
-                runs=args.runs,
-                server_launcher=launcher,
-                architecture=architecture,
-            )
-            runner.wait_for_server_ready()
-            runner.run_benchmark_config()
-
-        # Shutdown server after each io_threads test
-        if launcher and not args.use_running_server:
-            launcher.shutdown(cfg["tls_mode"])
-
+    # Cleanup
     if not args.use_running_server:
         if args.valkey_path:
             builder.terminate_valkey()
         else:
             builder.terminate_and_clean_valkey()
+
+
+def _iterate_execution_configs(cfg: dict, args: argparse.Namespace):
+    """Generate all execution configurations from config and CLI args."""
+    # Normalize cluster_modes
+    cluster_modes = cfg.get("cluster_mode")
+    if args.cluster_mode_filter:
+        cluster_modes = [parse_bool(args.cluster_mode_filter)]
+    elif not isinstance(cluster_modes, list):
+        cluster_modes = [cluster_modes]
+
+    # Normalize profiling_sets
+    profiling_sets = cfg.get("profiling_sets", [{"enabled": False}])
+    if args.skip_profiling:
+        profiling_sets = [{"enabled": False}]
+
+    # Normalize config_sets
+    config_sets = cfg.get("config_sets", [{}])
+    if args.skip_config_set:
+        config_sets = [{}]
+
+    # Normalize io_threads
+    io_threads_list = cfg.get("io-threads")
+    if io_threads_list is None:
+        io_threads_list = [None]
+    elif isinstance(io_threads_list, int):
+        io_threads_list = [io_threads_list]
+
+    # Generate all combinations
+    for cluster_mode in cluster_modes:
+        for profiling_set in profiling_sets:
+            for config_set in config_sets:
+                config_suffix = (
+                    "_".join([f"{k.split('.')[-1]}{v}" for k, v in config_set.items()])
+                    if config_set
+                    else "default"
+                )
+
+                for io_threads in io_threads_list:
+                    # Create modified config for this iteration
+                    exec_cfg = cfg.copy()
+                    exec_cfg["cluster_mode"] = cluster_mode
+
+                    yield {
+                        "cfg": exec_cfg,
+                        "cluster_mode": cluster_mode,
+                        "profiling_set": profiling_set,
+                        "config_set": config_set,
+                        "config_suffix": config_suffix,
+                        "io_threads": io_threads,
+                    }
+
+
+def _execute_benchmark_run(
+    exec_config,
+    args,
+    results_dir,
+    valkey_dir,
+    module_path,
+    uses_test_groups,
+    architecture,
+    client_cpu_ranges,
+):
+    """Execute a single benchmark run with specific configuration."""
+    cfg = exec_config["cfg"]
+    io_threads = exec_config["io_threads"]
+
+    logging.info(f"Running benchmark with io_threads={io_threads}")
+
+    # Setup server
+    launcher = None
+    if not args.use_running_server and args.mode == "both":
+        server_cpu_ranges = calculate_server_cpu_ranges(cfg)
+        if server_cpu_ranges:
+            cfg["server_cpu_ranges"] = server_cpu_ranges
+
+        launcher = ServerLauncher(
+            results_dir=str(results_dir),
+            valkey_path=str(valkey_dir),
+            cores=cfg.get("server_cpu_range"),
+            target_ip=args.target_ip,
+        )
+        launcher.launch(
+            cluster_mode=cfg["cluster_mode"],
+            tls_mode=cfg["tls_mode"],
+            io_threads=io_threads,
+            module_path=module_path,
+            config=cfg,
+        )
+
+    # Apply config set
+    if exec_config["config_set"] and not args.skip_config_set:
+        _apply_config_to_servers(exec_config["config_set"], cfg, args.target_ip)
+
+    # Run benchmark client
+    if args.mode in ("client", "both"):
+        if args.valkey_benchmark_path:
+            benchmark_path = str(args.valkey_benchmark_path)
+            logging.info(f"Using custom valkey-benchmark: {benchmark_path}")
+        elif args.valkey_path:
+            benchmark_path = str(valkey_dir / "src" / "valkey-benchmark")
+            logging.info(f"Using valkey-benchmark from valkey-path: {benchmark_path}")
+        else:
+            logging.info("Building latest valkey-benchmark...")
+            benchmark_builder = BenchmarkBuilder(tls_enabled=cfg["tls_mode"])
+            benchmark_path = benchmark_builder.build_benchmark()
+            logging.info(f"Built valkey-benchmark: {benchmark_path}")
+
+        runner = ClientRunner(
+            commit_id=exec_config["cfg"].get("commit_id", "HEAD"),
+            config=cfg,
+            cluster_mode=cfg["cluster_mode"],
+            tls_mode=cfg["tls_mode"],
+            target_ip=args.target_ip,
+            results_dir=results_dir,
+            valkey_path=str(valkey_dir),
+            cores=cfg.get("client_cpu_range"),
+            io_threads=io_threads,
+            valkey_benchmark_path=benchmark_path,
+            benchmark_threads=cfg.get("benchmark-threads"),
+            runs=args.runs,
+            server_launcher=launcher,
+            architecture=architecture,
+            uses_test_groups=uses_test_groups,
+        )
+
+        runner.current_profiling_set = exec_config["profiling_set"]
+        runner.current_config_set = exec_config["config_set"]
+        runner.config_suffix = exec_config["config_suffix"]
+
+        if client_cpu_ranges:
+            runner.client_cpu_ranges = client_cpu_ranges
+
+        runner.wait_for_server_ready()
+        runner.run_benchmark_config()
+
+    # Shutdown server
+    if launcher and not args.use_running_server:
+        launcher.shutdown(cfg["tls_mode"])
+
+
+def _apply_config_to_servers(config_set: dict, cfg: dict, target_ip: str) -> None:
+    """Apply CONFIG SET commands to all server nodes."""
+    import valkey
+
+    for port in _get_active_ports(cfg):
+        client = valkey.Valkey(host=target_ip, port=port)
+        try:
+            for k, v in config_set.items():
+                client.execute_command("CONFIG", "SET", k, str(v))
+                logging.info(f"Set {k} = {v} on port {port}")
+        finally:
+            client.close()
+
+
+def get_module_binary_path(args: argparse.Namespace) -> Optional[str]:
+    """Validate and return module binary path if module testing requested."""
+    if not args.module:
+        return None
+
+    if args.use_running_server:
+        logging.info("Using running server with pre-loaded module")
+        return None
+
+    if not args.module_path:
+        raise ValueError(
+            f"Module testing requires --module-path <path-to-.so>\n"
+            f"Build {args.module} module first, then provide .so file path."
+        )
+
+    module_binary = Path(args.module_path)
+    if not module_binary.exists():
+        raise FileNotFoundError(f"Module binary not found: {module_binary}")
+
+    if not module_binary.suffix == ".so":
+        raise ValueError(f"--module-path must point to .so file, got: {module_binary}")
+
+    return str(module_binary.absolute())
 
 
 # ---------- Entry point ------------------------------------------------------
@@ -583,295 +753,74 @@ def main() -> None:
         print("ERROR: --runs must be a positive integer")
         sys.exit(1)
 
-    # Module testing mode (for modules like valkey-search, valkey-json, etc.)
-    if args.module:
-        # Module testing requires valkey-path
-        if not args.valkey_path:
-            print(f"ERROR: {args.module} module testing requires --valkey-path")
-            sys.exit(1)
+    if args.module and not args.valkey_path:
+        print(f"ERROR: {args.module} module testing requires --valkey-path")
+        sys.exit(1)
 
-        # Module testing uses first config only
-        with open(args.config, "r") as f:
-            configs_list = json.load(f)
+    with open(args.config, "r") as f:
+        configs_list = json.load(f)
 
-        if not configs_list:
-            print("ERROR: No configurations found in config file")
-            sys.exit(1)
+    if not configs_list:
+        print("ERROR: No configurations found in config file")
+        sys.exit(1)
 
-        # For modules, we expect test_groups in config instead of standard fields
-        module_config = configs_list[0]
+    config = configs_list[0]
+    validate_config(config)
+    validate_cpu_allocation(config)
 
-        # Validate module configuration
-        validate_module_config(module_config)
+    uses_test_groups = "test_groups" in config
 
-        # Run module testing (unified flow)
-        run_module_tests(args, module_config)
-        return
+    module_path = get_module_binary_path(args)
 
-    # Core testing path (default when --module not specified)
+    if uses_test_groups and (
+        config.get("dataset_generation") or config.get("query_generation")
+    ):
+        import subprocess
+
+        required_datasets = set()
+        for test_group in config["test_groups"]:
+            for scenario in test_group.get("scenarios", []):
+                if "dataset" in scenario:
+                    required_datasets.add(scenario["dataset"])
+
+        missing = [Path(d) for d in required_datasets if not Path(d).exists()]
+        if missing:
+            print(f"Missing datasets: {[f.name for f in missing]}")
+            cmd = [
+                "python3",
+                "scripts/setup_datasets.py",
+                "--config",
+                args.config,
+                "--files",
+            ] + [f.name for f in missing]
+            subprocess.run(cmd, check=True)
+
+    if args.groups:
+        config["groups_to_run"] = set(int(g.strip()) for g in args.groups.split(","))
+    if args.scenarios:
+        config["scenario_filter"] = set(s.strip() for s in args.scenarios.split(","))
+
     commits = args.commits.copy()
     if args.baseline and args.baseline not in commits:
         commits.append(args.baseline)
 
-    configs = load_configs(args.config)
-    for cfg in configs:
-        # Prepare config data for tracking (just the config content, not file path)
-        config_data = cfg
-
-        for commit in commits:
-            print(f"=== Processing commit: {commit} ===")
-            run_benchmark_matrix(
-                commit_id=commit, cfg=cfg, args=args, config_data=config_data
-            )
-
-
-def run_module_tests(args: argparse.Namespace, module_config: dict) -> None:
-    """Run module tests using unified ClientRunner."""
-    import subprocess
-
-    logging.basicConfig(
-        level=getattr(logging, args.log_level),
-        format="%(asctime)s [%(levelname)s] %(message)s",
-    )
-
-    # Parse requested groups/scenarios filters
-    groups_to_run = None
-    if args.groups:
-        groups_to_run = set(int(g.strip()) for g in args.groups.split(","))
-        module_config["groups_to_run"] = groups_to_run
-        logging.info(f"Groups filter enabled: {groups_to_run}")
-
-    if args.scenarios:
-        scenario_ids = set(s.strip() for s in args.scenarios.split(","))
-        module_config["scenario_filter"] = scenario_ids
-        logging.info(f"Scenario filter enabled: {scenario_ids}")
-
-    # Check for missing datasets and generate if needed
-    required_datasets = set()
-    for test_group in module_config.get(
-        "test_groups", module_config.get("fts_tests", [])
-    ):
-        if groups_to_run and test_group.get("group") not in groups_to_run:
-            continue
-        for scenario in test_group.get("scenarios", []):
-            if "dataset" in scenario:
-                required_datasets.add(scenario["dataset"])
-
-    missing_datasets = [Path(d) for d in required_datasets if not Path(d).exists()]
-
-    if missing_datasets:
-        logging.info(f"Missing datasets: {[str(f.name) for f in missing_datasets]}")
-        logging.info("Running setup script...")
-        cmd = [
-            "python3",
-            "scripts/setup_datasets.py",
-            "--config",
-            args.config,
-            "--files",
-        ] + [f.name for f in missing_datasets]
-        subprocess.run(cmd, check=True)
-
-    # Setup paths and directories
-    results_dir = args.results_dir / f"{args.module}_tests"
-    results_dir.mkdir(parents=True, exist_ok=True)
-
-    valkey_dir = Path(args.valkey_path)
-
-    # Detect architecture
-    architecture = platform.machine()
-
-    # Validate and use pre-built module binary
-    module_path = None
-    if not args.use_running_server:
-        # Require --module-path for module testing
-        if not args.module_path:
-            raise ValueError(
-                f"Module testing requires either:\n"
-                f"  1. --module-path <path-to-.so> (use pre-built module binary), OR\n"
-                f"  2. --use-running-server (assumes server with module already running)\n\n"
-                f"If using --module-path: Build your {args.module} module first with its native build system "
-                f"(e.g., build.sh, make, cmake), then provide the path to the .so file."
-            )
-
-        # Validate that path points to an existing .so file
-        module_binary = Path(args.module_path)
-        if not module_binary.exists():
-            raise FileNotFoundError(
-                f"Module binary not found: {module_binary}\n"
-                f"Please build the module first before running benchmarks."
-            )
-
-        if not module_binary.suffix == ".so":
-            raise ValueError(
-                f"--module-path must point to a .so file (pre-built binary), got: {module_binary}\n"
-                f"If you provided a source directory, please build the module first and provide the path to the .so file."
-            )
-
-        module_path = str(module_binary.absolute())
-        logging.info(f"Using pre-built module binary: {module_path}")
+    # Setup logging once for entire run
+    if args.module:
+        log_dir = args.results_dir / f"{args.module}_tests"
     else:
-        logging.info(
-            "Skipping module validation (using running server with pre-loaded module)"
+        log_dir = args.results_dir / commits[0]
+    log_dir.mkdir(parents=True, exist_ok=True)
+    init_logging(log_dir / "logs.txt", args.log_level)
+
+    for commit in commits:
+        print(f"=== Processing commit: {commit} ===")
+        run_benchmark_matrix(
+            commit_id=commit,
+            cfg=config,
+            args=args,
+            module_path=module_path,
+            uses_test_groups=uses_test_groups,
         )
-
-    # Get benchmark path
-    valkey_benchmark_path = str(
-        args.valkey_benchmark_path or valkey_dir / "src" / "valkey-benchmark"
-    )
-
-    # Normalize config structure (handle both test_groups and fts_tests)
-    if "fts_tests" in module_config and "test_groups" not in module_config:
-        module_config["test_groups"] = module_config["fts_tests"]
-
-    # Handle cluster_mode override/filtering
-    if args.cluster_mode_filter is not None:
-        # CLI overrides config entirely
-        override_value = parse_bool(args.cluster_mode_filter)
-        cluster_modes = [override_value]
-        logging.info(f"CLI override: cluster_mode={override_value} (ignoring config)")
-    else:
-        # Use config value(s)
-        cluster_modes = module_config.get("cluster_mode")
-        if isinstance(cluster_modes, list):
-            logging.info(f"Using cluster_modes from config: {cluster_modes}")
-        else:
-            cluster_modes = [cluster_modes]
-            logging.info(f"Using single cluster_mode from config: {cluster_modes}")
-
-    config_sets = module_config.get("config_sets", [{}])
-
-    # Override profiling and config sets if skip-profiling is enabled
-    if args.skip_profiling:
-        profiling_sets = [{"enabled": False}]
-        logging.info("--skip-profiling enabled: Skipping profiling (no flamegraphs)")
-    else:
-        profiling_sets = module_config.get("profiling_sets", [{"enabled": False}])
-
-    # If skip-config-set, avoid looping through multiple configs
-    if args.skip_config_set:
-        config_sets = [{}]
-        logging.info("--skip-config-set enabled: Skipping config loop")
-
-    init_logging(results_dir / "logs.txt", args.log_level)
-
-    # Loop through cluster modes (for unified configs)
-    for cluster_mode in cluster_modes:
-        logging.info(f"=== Testing with cluster_mode: {cluster_mode} ===")
-
-        # Set cluster_mode for this iteration
-        module_config["cluster_mode"] = parse_bool(cluster_mode)
-
-        for profiling_set_idx, profiling_set in enumerate(profiling_sets):
-            profiling_enabled = profiling_set.get("enabled", False)
-            logging.info(f"=== Testing with profiling: {profiling_enabled} ===")
-
-            for config_set in config_sets:
-                if config_set:
-                    label_parts = [
-                        f"{k.split('.')[-1]}{v}" for k, v in config_set.items()
-                    ]
-                    config_suffix = "_".join(label_parts)
-                else:
-                    config_suffix = "default"
-
-                logging.info(f"=== Testing with config: {config_set or 'default'} ===")
-
-                launcher = None
-                if not args.use_running_server and args.mode == "both":
-                    server_core_range = module_config.get("server_cpu_range")
-
-                    launcher = ServerLauncher(
-                        results_dir=str(results_dir),
-                        valkey_path=str(valkey_dir),
-                        cores=server_core_range,
-                        target_ip=args.target_ip,
-                    )
-                    launcher.launch(
-                        cluster_mode=module_config.get("cluster_mode", False),
-                        tls_mode=module_config.get("tls_mode", False),
-                        io_threads=module_config.get("io-threads"),
-                        module_path=module_path,
-                        config=module_config,
-                    )
-
-                if config_set:
-                    import valkey
-
-                    target_ip = args.target_ip
-
-                    # Get ports to configure (multi-node or single)
-                    if (
-                        module_config.get("cluster_mode")
-                        and "cluster_ports" in module_config
-                    ):
-                        ports = module_config["cluster_ports"]
-                    else:
-                        ports = [module_config.get("port", 6379)]
-
-                    # Skip CONFIG SET if requested
-                    if args.skip_config_set:
-                        logging.warning(
-                            f"--skip-config-set enabled - skipping CONFIG SET commands: {list(config_set.keys())}"
-                        )
-                        logging.info(
-                            "Server will run with default configuration. "
-                            "For fair comparison, ensure server settings are appropriate for the benchmark."
-                        )
-                    else:
-                        # Execute CONFIG SET on all nodes
-                        for port in ports:
-                            client = valkey.Valkey(host=target_ip, port=port)
-                            try:
-                                for config_key, config_value in config_set.items():
-                                    client.execute_command(
-                                        "CONFIG", "SET", config_key, str(config_value)
-                                    )
-                                    logging.info(
-                                        f"Set {config_key} = {config_value} on port {port}"
-                                    )
-                            except Exception as e:
-                                logging.error(
-                                    f"Failed to set config on port {port}: {e}"
-                                )
-                                client.close()
-                                raise
-                            client.close()
-
-                commit_id = module_config.get("commit_id", "HEAD")
-                target_ip = args.target_ip
-                cores = module_config.get("client_cpu_range")
-
-                runner = ClientRunner(
-                    commit_id=commit_id,
-                    config=module_config,
-                    cluster_mode=module_config.get("cluster_mode", False),
-                    tls_mode=module_config.get("tls_mode", False),
-                    target_ip=target_ip,
-                    results_dir=results_dir,
-                    valkey_path=str(valkey_dir),
-                    cores=cores,
-                    valkey_benchmark_path=valkey_benchmark_path,
-                    runs=1,
-                    server_launcher=launcher,
-                    architecture=architecture,
-                    module_config=module_config,
-                )
-
-                runner.current_profiling_set = profiling_set
-                runner.current_config_set = config_set
-                runner.config_suffix = config_suffix
-
-                runner.wait_for_server_ready()
-                runner.run_benchmark_config()
-
-                if launcher and not args.use_running_server:
-                    launcher.shutdown(module_config.get("tls_mode", False))
-
-                logging.info(
-                    f"=== Completed testing with config: {config_set or 'default'} and profiling: {profiling_enabled} ==="
-                )
-
-    logging.info(f"=== Module testing complete for {args.module} ===")
 
 
 if __name__ == "__main__":
